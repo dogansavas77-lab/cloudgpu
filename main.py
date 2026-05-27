@@ -360,20 +360,29 @@ async def agent_connect(websocket: WebSocket, agent_key: str):
 
 # ── Genel GPU Listesi (Kiracılar için) ────────────────────────
 @app.get("/gpus")
-def list_gpus():
-    """Müsait GPU'ları listele — hem gerçek hem varsayılan"""
+def list_gpus(all: bool = False, credentials: Optional[str] = None):
+    """Müsait GPU'ları listele — admin için hepsini, kullanıcı için sadece available"""
     conn = get_db()
-    real_gpus = conn.execute(
-        "SELECT gl.*, u.name as provider_name FROM gpu_listings gl "
-        "JOIN users u ON gl.provider_id = u.id "
-        "WHERE gl.status = 'available' ORDER BY gl.price_per_hour ASC"
-    ).fetchall()
-    conn.close()
 
+    if all:
+        # Admin — tüm GPU'ları göster
+        real_gpus = conn.execute(
+            "SELECT gl.*, u.name as provider_name FROM gpu_listings gl "
+            "JOIN users u ON gl.provider_id = u.id "
+            "ORDER BY gl.created_at DESC"
+        ).fetchall()
+    else:
+        real_gpus = conn.execute(
+            "SELECT gl.*, u.name as provider_name FROM gpu_listings gl "
+            "JOIN users u ON gl.provider_id = u.id "
+            "WHERE gl.status = 'available' ORDER BY gl.price_per_hour ASC"
+        ).fetchall()
+
+    conn.close()
     result = [dict(g) for g in real_gpus]
 
-    # Eğer gerçek GPU yoksa varsayılan listeyi göster
-    if not result:
+    # Kullanıcı için gerçek GPU yoksa demo göster
+    if not result and not all:
         result = [
             {"id": None, "name": "RTX 4090",     "vram": "24 GB", "tflops": 82.6,  "price_per_hour": 0.44, "status": "available", "location": "Demo"},
             {"id": None, "name": "RTX 3090",     "vram": "24 GB", "tflops": 35.6,  "price_per_hour": 0.22, "status": "available", "location": "Demo"},
