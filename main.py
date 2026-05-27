@@ -520,3 +520,93 @@ def health():
     gpu_count = conn.execute("SELECT COUNT(*) as c FROM gpu_listings WHERE status='available'").fetchone()["c"]
     conn.close()
     return {"status": "ok", "available_gpus": gpu_count, "time": datetime.now().isoformat()}
+
+# ── Admin Endpoint'leri ───────────────────────────────────────
+ADMIN_EMAIL = "admin@cloudgpu.com"
+ADMIN_PASSWORD = "admin1234"
+
+class AdminLoginRequest(BaseModel):
+    admin_email: str
+    admin_password: str
+
+class AddCreditRequest(BaseModel):
+    user_id: int
+    amount: float
+
+@app.post("/admin/login")
+def admin_login(req: AdminLoginRequest):
+    if req.admin_email != ADMIN_EMAIL or req.admin_password != ADMIN_PASSWORD:
+        raise HTTPException(401, "Hatalı admin bilgileri.")
+    token = "admin_" + secrets.token_hex(16)
+    return {"token": token, "message": "Admin girişi başarılı."}
+
+@app.get("/admin/users")
+def admin_get_users(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials.credentials.startswith("admin_"):
+        raise HTTPException(403, "Admin yetkisi gerekli.")
+    conn = get_db()
+    users = conn.execute("SELECT id, name, email, role, credit, created_at FROM users ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(u) for u in users]
+
+@app.get("/admin/stats")
+def admin_get_stats(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials.credentials.startswith("admin_"):
+        raise HTTPException(403, "Admin yetkisi gerekli.")
+    conn = get_db()
+    user_count = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+    gpu_count = conn.execute("SELECT COUNT(*) as c FROM gpu_listings").fetchone()["c"]
+    online_gpus = conn.execute("SELECT COUNT(*) as c FROM gpu_listings WHERE status='available'").fetchone()["c"]
+    active_rentals = conn.execute("SELECT COUNT(*) as c FROM rentals WHERE status='running'").fetchone()["c"]
+    total_revenue = conn.execute("SELECT COALESCE(SUM(amount),0) as t FROM provider_earnings").fetchone()["t"]
+    conn.close()
+    return {
+        "user_count": user_count,
+        "gpu_count": gpu_count,
+        "online_gpus": online_gpus,
+        "active_rentals": active_rentals,
+        "total_revenue": round(total_revenue * 0.3, 2)
+    }
+
+@app.post("/admin/add-credit")
+def admin_add_credit(req: AddCreditRequest, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials.credentials.startswith("admin_"):
+        raise HTTPException(403, "Admin yetkisi gerekli.")
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (req.user_id,)).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(404, "Kullanıcı bulunamadı.")
+    new_credit = user["credit"] + req.amount
+    conn.execute("UPDATE users SET credit = ? WHERE id = ?", (new_credit, req.user_id))
+    conn.execute("INSERT INTO transactions (user_id, description, amount) VALUES (?, ?, ?)",
+                 (req.user_id, f"Admin tarafından kredi eklendi", req.amount))
+    conn.commit()
+    conn.close()
+    return {"message": f"${req.amount} kredi eklendi.", "new_credit": new_credit}
+
+@app.get("/admin/rentals")
+def admin_get_rentals(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials.credentials.startswith("admin_"):
+        raise HTTPException(403, "Admin yetkisi gerekli.")
+    conn = get_db()
+    rentals = conn.execute(
+        "SELECT r.*, u.name as user_name, gl.name as gpu_name "
+        "FROM rentals r JOIN users u ON r.user_id = u.id "
+        "JOIN gpu_listings gl ON r.gpu_id = gl.id "
+        "ORDER BY r.started_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rentals]
+
+@app.get("/admin/transactions")
+def admin_get_transactions(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials.credentials.startswith("admin_"):
+        raise HTTPException(403, "Admin yetkisi gerekli.")
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT t.*, u.name as user_name FROM transactions t "
+        "JOIN users u ON t.user_id = u.id ORDER BY t.created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
